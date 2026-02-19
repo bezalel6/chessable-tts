@@ -8,6 +8,7 @@ export interface TTSSettings {
   voice: string;      // SpeechSynthesisVoice.name, or '' for default
   readMoveFirst: boolean;
   readExplanation: boolean;
+  debugMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: TTSSettings = {
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS: TTSSettings = {
   voice: '',
   readMoveFirst: true,
   readExplanation: true,
+  debugMode: false,
 };
 
 // ─── Messages (popup ↔ content script) ────────────────────────────────────────
@@ -54,6 +56,7 @@ export interface SelectorGroup {
   explanationText: string[];
   wrongMoveIndicator: string[];
   moveNotation: string[];
+  commentContainer: string[];
 }
 
 // ─── Debug API exposed on window ──────────────────────────────────────────────

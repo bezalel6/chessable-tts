@@ -28,6 +28,7 @@ const controls = {
   volumeVal:       getEl<HTMLSpanElement>('volumeVal'),
   readMove:        getEl<HTMLInputElement>('checkReadMove'),
   readExplanation: getEl<HTMLInputElement>('checkReadExplanation'),
+  debugMode:       getEl<HTMLInputElement>('checkDebugMode'),
   btnTest:         getEl<HTMLButtonElement>('btnTest'),
   statusDot:       getEl<HTMLSpanElement>('statusDot'),
   statusText:      getEl<HTMLSpanElement>('statusText'),
@@ -69,6 +70,7 @@ chrome.storage.sync.get(
     if (stored.volume   !== undefined) controls.volume.value      = String(stored.volume);
     if (stored.readMoveFirst    !== undefined) controls.readMove.checked        = stored.readMoveFirst;
     if (stored.readExplanation  !== undefined) controls.readExplanation.checked = stored.readExplanation;
+    if (stored.debugMode        !== undefined) controls.debugMode.checked       = stored.debugMode;
 
     updateDisplayValues();
     updateStatus();
@@ -102,6 +104,7 @@ function readSettings(): TTSSettings {
     voice:           controls.voice.value,
     readMoveFirst:   controls.readMove.checked,
     readExplanation: controls.readExplanation.checked,
+    debugMode:       controls.debugMode.checked,
   };
 }
 
@@ -153,6 +156,7 @@ controls.enabled.addEventListener('change', () => {
 controls.voice.addEventListener('change', saveAndBroadcast);
 controls.readMove.addEventListener('change', saveAndBroadcast);
 controls.readExplanation.addEventListener('change', saveAndBroadcast);
+controls.debugMode.addEventListener('change', saveAndBroadcast);
 
 // ─── Test button ──────────────────────────────────────────────────────────────
 

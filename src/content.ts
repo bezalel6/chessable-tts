@@ -6,6 +6,8 @@
  */
 
 import { processText } from './chess-notation';
+import { enableOverlay, disableOverlay } from './debug-overlay';
+import { createPanel } from './panel';
 import {
   DEFAULT_SETTINGS,
   ExtensionMessage,
@@ -14,41 +16,39 @@ import {
 } from './types';
 
 // ─── Selectors ────────────────────────────────────────────────────────────────
-// These target Chessable's current DOM structure.
+// These target Chessable's actual DOM structure (discovered from page inspection).
 // Update these if Chessable ships a redesign — use window.__chessableTTS.selectors
 // in DevTools to inspect and test alternatives without reloading.
 
 const SELECTORS: SelectorGroup = {
   wrongMoveContainer: [
-    '.wrong-move-feedback',
-    '.move-feedback.wrong',
-    '.incorrect-move',
-    '[class*="wrongMove"]',
-    '[class*="incorrect"]',
-    '.solution-feedback--wrong',
+    '[data-testid="moveNotification"]',
+    '.board-footer',
+    '.move-notification',
   ],
   explanationText: [
-    '.move-comment',
-    '.comment-text',
-    '.explanation',
-    '.move-explanation',
-    '.feedback-text',
-    '[class*="comment"]',
-    '[class*="explanation"]',
-    '[class*="feedback"]',
-    '.chapter-text',
-    '.variation-comment',
+    '[data-testid="commentTextBlock"]',
+    '.commentInVariation',
+    '.comment-text-block',
+    '[class*="commentText"]',
   ],
   wrongMoveIndicator: [
-    '[class*="wrong"]',
-    '[class*="incorrect"]',
-    '[class*="mistake"]',
+    '.icon--wrong',
+    '.icon-circle-wrapper .icon--wrong',
+    '[class*="icon--wrong"]',
+    '[data-testid="moveNotification"] [class*="wrong"]',
   ],
   moveNotation: [
-    '.move-notation',
-    '.san',
-    '[class*="moveNotation"]',
-    '[class*="move-san"]',
+    '[data-testid="commentMove"] .commentMove',
+    '[data-testid="commentSubMove"]',
+    '.commentMove',
+    '[class*="commentMove"]',
+  ],
+  commentContainer: [
+    '#teachComment',
+    '[data-testid="commentScrollContainer"]',
+    '.comment-scroll-container',
+    '[class*="teachComment"]',
   ],
 };
 
@@ -63,6 +63,11 @@ const DEBOUNCE_MS = 800;
 
 chrome.storage.sync.get(Object.keys(DEFAULT_SETTINGS), (stored) => {
   settings = { ...settings, ...(stored as Partial<TTSSettings>) };
+
+  // Initialize debug overlay if it was enabled
+  if (settings.debugMode) {
+    enableOverlay(SELECTORS);
+  }
 });
 
 // ─── Message listener ─────────────────────────────────────────────────────────
@@ -71,6 +76,19 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
   switch (msg.type) {
     case 'SETTINGS_UPDATED':
       settings = { ...settings, ...msg.settings };
+
+      // Sync debug overlay state
+      if (msg.settings.debugMode !== undefined) {
+        if (msg.settings.debugMode) {
+          enableOverlay(SELECTORS);
+        } else {
+          disableOverlay();
+        }
+        panel?.setDebugChecked(settings.debugMode);
+      }
+
+      // Sync panel with new settings
+      panel?.updateFromSettings(settings);
       break;
     case 'TEST_SPEAK':
       speak('Knight to f 3 check. This move attacks the queen on d 4 and forks the rook.');
@@ -130,20 +148,43 @@ function queryAny(selectors: string[], root: ParentNode = document): Element | n
 }
 
 function queryAllAny(selectors: string[], root: ParentNode = document): Element[] {
+  const results: Element[] = [];
   for (const sel of selectors) {
     try {
       const els = root.querySelectorAll(sel);
-      if (els.length > 0) return Array.from(els);
+      els.forEach((el) => {
+        if (!results.includes(el)) results.push(el);
+      });
     } catch {
       // Invalid selector — skip
     }
   }
-  return [];
+  return results;
 }
+
+/** Map Chessable's data-piece attribute to SAN piece letter */
+const PIECE_ATTR_TO_LETTER: Record<string, string> = {
+  king:   'K',
+  queen:  'Q',
+  rook:   'R',
+  bishop: 'B',
+  knight: 'N',
+};
 
 function getVisibleText(el: Element): string {
   const clone = el.cloneNode(true) as Element;
   clone.querySelectorAll('script, style, [aria-hidden="true"]').forEach((n) => n.remove());
+
+  // Replace Chessable's SVG piece icons with their SAN letter.
+  // e.g. <span class="commentMove__piece" data-piece="rook"><svg>…</svg></span> → "R"
+  clone.querySelectorAll('.commentMove__piece, [data-piece]').forEach((pieceSpan) => {
+    const pieceName = pieceSpan.getAttribute('data-piece')
+                   ?? pieceSpan.getAttribute('aria-label')
+                   ?? '';
+    const letter = PIECE_ATTR_TO_LETTER[pieceName.toLowerCase()] ?? '';
+    pieceSpan.replaceWith(letter);
+  });
+
   return (clone as HTMLElement).innerText ?? clone.textContent ?? '';
 }
 
@@ -177,7 +218,14 @@ function extractExplanation(triggerNode: Element | null): string {
     if (txt.length > 3) return txt;
   }
 
-  // Strategy 2: walk up the DOM from the trigger looking for substantial text
+  // Strategy 2: search within comment containers
+  const container = queryAny(SELECTORS.commentContainer, document);
+  if (container) {
+    const txt = getVisibleText(container).trim();
+    if (txt.length > 10 && txt.length < 2000) return txt;
+  }
+
+  // Strategy 3: walk up the DOM from the trigger looking for substantial text
   if (triggerNode) {
     let node: Element | null = triggerNode;
     for (let depth = 0; depth < 6 && node; depth++) {
@@ -188,19 +236,45 @@ function extractExplanation(triggerNode: Element | null): string {
     }
   }
 
-  // Strategy 3: fallback to known Chessable panel selectors
-  const panels = queryAllAny([
-    '.chapter-content',
-    '.move-list',
-    '.variation-panel',
-    '.comment-panel',
-  ]);
-  for (const panel of panels) {
-    const txt = getVisibleText(panel).trim();
-    if (txt.length > 10) return txt;
+  return '';
+}
+
+/**
+ * Extract and speak the currently visible explanation panel text.
+ * Used by the "Read current" button in the injected panel.
+ */
+function readCurrentExplanation(): void {
+  // Try explanation text first
+  const explanationEl = queryAny(SELECTORS.explanationText, document);
+  if (explanationEl) {
+    const txt = getVisibleText(explanationEl).trim();
+    if (txt.length > 3) {
+      speak(txt);
+      return;
+    }
   }
 
-  return '';
+  // Try comment container
+  const container = queryAny(SELECTORS.commentContainer, document);
+  if (container) {
+    const txt = getVisibleText(container).trim();
+    if (txt.length > 3) {
+      speak(txt);
+      return;
+    }
+  }
+
+  // Fallback: try all explanation selectors across the page
+  const allExplanations = queryAllAny(SELECTORS.explanationText, document);
+  for (const el of allExplanations) {
+    const txt = getVisibleText(el).trim();
+    if (txt.length > 3) {
+      speak(txt);
+      return;
+    }
+  }
+
+  console.log('[ChessableTTS] No explanation text found on page.');
 }
 
 /**
@@ -246,9 +320,40 @@ const observer = new MutationObserver((mutations: MutationRecord[]) => {
     for (const node of mutation.addedNodes) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
       const el = node as Element;
-      const nodeStr = `${el.className ?? ''} ${el.id ?? ''}`;
 
-      // The added node itself signals a wrong move
+      // Check if the added node is or contains a move notification
+      if (el.matches?.('[data-testid="moveNotification"]') ||
+          el.querySelector?.('[data-testid="moveNotification"]')) {
+        // Wait a tick for the notification content to populate
+        setTimeout(() => {
+          if (isWrongMoveVisible()) {
+            handleWrongMove(el);
+          }
+        }, 100);
+        break;
+      }
+
+      // Check if the added node is or contains a wrong-move icon
+      if (el.matches?.('.icon--wrong') ||
+          el.querySelector?.('.icon--wrong') ||
+          el.matches?.('[class*="icon--wrong"]')) {
+        handleWrongMove(el);
+        break;
+      }
+
+      // Nodes added inside #teachComment (explanation text appearing)
+      if (el.closest?.('#teachComment') ||
+          el.matches?.('#teachComment') ||
+          el.matches?.('[data-testid="commentScrollContainer"]') ||
+          el.querySelector?.('[data-testid="commentTextBlock"]')) {
+        if (isWrongMoveVisible()) {
+          handleWrongMove(el);
+          break;
+        }
+      }
+
+      // Fallback: check className/id for wrong-move indicators
+      const nodeStr = `${el.className ?? ''} ${el.id ?? ''}`;
       if (/wrong|incorrect|mistake|error|retry/i.test(nodeStr)) {
         handleWrongMove(el);
         break;
@@ -269,18 +374,92 @@ const observer = new MutationObserver((mutations: MutationRecord[]) => {
       }
     }
 
-    // ── Class attribute changes (board highlights, state flags) ────────────
+    // ── Class attribute changes ────────────────────────────────────────────
     if (
       mutation.type === 'attributes' &&
       mutation.attributeName === 'class'
     ) {
       const el = mutation.target as Element;
-      if (/wrong|incorrect|mistake/i.test(el.className ?? '')) {
+      const className = el.className ?? '';
+
+      // Detect icon--wrong being added (Chessable toggling wrong-move state)
+      if (className.includes('icon--wrong')) {
         handleWrongMove(el);
+      }
+
+      // Fallback pattern matching
+      if (/wrong|incorrect|mistake/i.test(className)) {
+        handleWrongMove(el);
+      }
+    }
+
+    // ── data-state / aria-hidden changes on notification elements ──────────
+    if (
+      mutation.type === 'attributes' &&
+      (mutation.attributeName === 'data-state' || mutation.attributeName === 'aria-hidden')
+    ) {
+      const el = mutation.target as Element;
+      if (el.matches?.('[data-testid="moveNotification"]') ||
+          el.closest?.('[data-testid="moveNotification"]')) {
+        if (isWrongMoveVisible()) {
+          handleWrongMove(el);
+        }
       }
     }
   }
 });
+
+// ─── Injected panel ───────────────────────────────────────────────────────────
+
+let panel: ReturnType<typeof createPanel> | null = null;
+
+function initPanel(): void {
+  panel = createPanel({
+    onToggleEnabled(enabled) {
+      settings.enabled = enabled;
+      chrome.storage.sync.set({ enabled });
+      broadcastSettings({ enabled });
+    },
+
+    onVolumeChange(volume) {
+      settings.volume = volume;
+      chrome.storage.sync.set({ volume });
+      broadcastSettings({ volume });
+    },
+
+    onReadCurrent() {
+      readCurrentExplanation();
+    },
+
+    onToggleDebug(debugOn) {
+      settings.debugMode = debugOn;
+      chrome.storage.sync.set({ debugMode: debugOn });
+      if (debugOn) {
+        enableOverlay(SELECTORS);
+      } else {
+        disableOverlay();
+      }
+      broadcastSettings({ debugMode: debugOn });
+    },
+  });
+
+  panel.updateFromSettings(settings);
+  panel.mount();
+}
+
+function broadcastSettings(partial: Partial<TTSSettings>): void {
+  // Broadcast to popup if it's listening
+  try {
+    chrome.runtime.sendMessage({
+      type: 'SETTINGS_UPDATED',
+      settings: partial,
+    } as ExtensionMessage).catch(() => {
+      // No listener — that's fine
+    });
+  } catch {
+    // Extension context invalidated — ignore
+  }
+}
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -294,10 +473,15 @@ function startObserver(): void {
   console.log('[ChessableTTS] Observer active.');
 }
 
-if (document.body) {
+function bootstrap(): void {
   startObserver();
+  initPanel();
+}
+
+if (document.body) {
+  bootstrap();
 } else {
-  document.addEventListener('DOMContentLoaded', startObserver);
+  document.addEventListener('DOMContentLoaded', bootstrap);
 }
 
 // ─── Debug API ────────────────────────────────────────────────────────────────
