@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chessable TTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f0e0d;
+      --surface: #1a1917;
+      --border: #2e2c29;
+      --accent: #c8a96e;
+      --accent-dim: #8a6f3f;
+      --text: #e8e4dc;
+      --text-muted: #7a7470;
+      --success: #4caf82;
+      --danger: #c25f5f;
+      --radius: 8px;
+    }
+
+    body {
+      width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px;
+      padding: 0;
+      user-select: none;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 16px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .header-text h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 15px;
+      font-weight: 400;
+      color: var(--text);
+      letter-spacing: 0.01em;
+    }
+
+    .header-text p {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+
+    /* ── Toggle ── */
+    .master-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toggle-label {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .switch {
+      position: relative;
+      width: 38px;
+      height: 20px;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      background: var(--border);
+      border-radius: 20px;
+      transition: background 0.2s;
+      cursor: pointer;
+    }
+    .switch-track::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .switch input:checked ~ .switch-track { background: var(--accent); }
+    .switch input:checked ~ .switch-track::after { transform: translateX(18px); }
+
+    /* ── Content ── */
+    .content {
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* ── Section ── */
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent-dim);
+      margin-bottom: 8px;
+    }
+
+    /* ── Sliders ── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .slider-row:last-child { margin-bottom: 0; }
+
+    .slider-name {
+      width: 68px;
+      font-size: 12px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    input[type=range] {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 3px;
+      background: var(--border);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 0 3px rgba(200,169,110,0.15);
+      cursor: pointer;
+    }
+    input[type=range]:focus::-webkit-slider-thumb {
+      box-shadow: 0 0 0 4px rgba(200,169,110,0.3);
+    }
+
+    .slider-val {
+      width: 28px;
+      text-align: right;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--accent);
+    }
+
+    /* ── Voice select ── */
+    select {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: var(--radius);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237a7470' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    select:focus { border-color: var(--accent-dim); }
+
+    /* ── Checkbox rows ── */
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      margin-bottom: 8px;
+    }
+    .check-row:last-child { margin-bottom: 0; }
+    .check-row input[type=checkbox] { display: none; }
+    .check-box {
+      width: 16px;
+      height: 16px;
+      border: 1.5px solid var(--border);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .check-row input:checked ~ .check-box {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .check-row input:checked ~ .check-box::after {
+      content: '';
+      display: block;
+      width: 9px;
+      height: 5px;
+      border-left: 2px solid #0f0e0d;
+      border-bottom: 2px solid #0f0e0d;
+      transform: translateY(-1px) rotate(-45deg);
+    }
+    .check-label {
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    /* ── Divider ── */
+    .divider {
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── Test button ── */
+    .btn-test {
+      width: 100%;
+      padding: 9px 14px;
+      background: transparent;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-test:hover {
+      border-color: var(--accent-dim);
+      color: var(--accent);
+    }
+    .btn-test:active { opacity: 0.7; }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px var(--success);
+      flex-shrink: 0;
+    }
+    .status-dot.off { background: var(--text-muted); box-shadow: none; }
+
+    .status-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .version {
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      color: var(--border);
+    }
+
+    /* ── Disabled state ── */
+    body.disabled .content { opacity: 0.4; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">♟</div>
+    <div class="header-text">
+      <h1>Chessable TTS</h1>
+      <p>Move explanation reader</p>
+    </div>
+  </div>
+
+  <div class="master-toggle">
+    <span class="toggle-label">Enable TTS</span>
+    <label class="switch">
+      <input type="checkbox" id="toggleEnabled" checked />
+      <span class="switch-track"></span>
+    </label>
+  </div>
+
+  <div class="content">
+
+    <!-- Voice -->
+    <div>
+      <div class="section-label">Voice</div>
+      <select id="voiceSelect">
+        <option value="">Default system voice</option>
+      </select>
+    </div>
+
+    <!-- Sliders -->
+    <div>
+      <div class="section-label">Speech Settings</div>
+      <div class="slider-row">
+        <span class="slider-name">Speed</span>
+        <input type="range" id="rateSlider" min="0.5" max="2" step="0.05" value="1" />
+        <span class="slider-val" id="rateVal">1.0×</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-name">Pitch</span>
+        <input type="range" id="pitchSlider" min="0.5" max="2" step="0.05" value="1" />
+        <span class="slider-val" id="pitchVal">1.0</span>
+      </div>
+      <div class="slider-row">
+        <span class="slider-name">Volume</span>
+        <input type="range" id="volumeSlider" min="0" max="1" step="0.05" value="1" />
+        <span class="slider-val" id="volumeVal">100%</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Read options -->
+    <div>
+      <div class="section-label">Read Aloud</div>
+      <label class="check-row">
+        <input type="checkbox" id="checkReadMove" checked />
+        <span class="check-box"></span>
+        <span class="check-label">Announce move played</span>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="checkReadExplanation" checked />
+        <span class="check-box"></span>
+        <span class="check-label">Read explanation text</span>
+      </label>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Test -->
+    <button class="btn-test" id="btnTest">
+      <span>▶</span> Test voice
+    </button>
+  </div>
+
+  <div class="footer">
+    <div class="status-text">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Active on Chessable</span>
+    </div>
+    <span class="version">v1.0.0</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
