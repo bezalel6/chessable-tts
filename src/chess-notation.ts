@@ -13,7 +13,7 @@
  *   "Rxd8#"   → "Rook takes d 8 checkmate"
  */
 
-import type { File, ParsedMove, PieceLetter, Rank, Square } from './types';
+import type { File, MoveRange, ParsedMove, PieceLetter, Rank, Square } from './types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -173,6 +173,24 @@ export function moveToSpeech(parsed: ParsedMove): string {
   return parts.join(' ');
 }
 
+// ─── Move pattern ──────────────────────────────────────────────────────────────
+
+/**
+ * Regex that matches move tokens inside prose.
+ * Matches (in order of priority):
+ *   - Castling:    O-O-O | O-O | 0-0-0 | 0-0
+ *   - SAN moves:   [KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=[QRBN])?[+#!?]*
+ *   - Plain pawn:  [a-h][2-7]  (single-step pawn moves like "e4")
+ *
+ * Optional move-number prefix (e.g. "1." or "12...") is included so
+ * we can strip it in parseMove without leaving orphaned numbers.
+ *
+ * Trailing \b removed — +, #, !, ? are non-word chars so \b fails after them.
+ * The pattern is specific enough that removing the trailing boundary is safe.
+ */
+export const MOVE_PATTERN =
+  /\b(?:\d+\.{1,3}\s*)?(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#!?]*)/g;
+
 // ─── Text processor ───────────────────────────────────────────────────────────
 
 /**
@@ -182,23 +200,68 @@ export function moveToSpeech(parsed: ParsedMove): string {
 export function processText(text: string): string {
   if (!text) return text;
 
-  /**
-   * Regex that matches move tokens inside prose.
-   * Matches (in order of priority):
-   *   - Castling:    O-O-O | O-O | 0-0-0 | 0-0
-   *   - SAN moves:   [KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](=[QRBN])?[+#!?]*
-   *   - Plain pawn:  [a-h][2-7]  (single-step pawn moves like "e4")
-   *
-   * Optional move-number prefix (e.g. "1." or "12...") is included so
-   * we can strip it in parseMove without leaving orphaned numbers.
-   */
-  const movePattern =
-    /\b(?:\d+\.{1,3}\s*)?(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#!?]*)\b/g;
-
-  return text.replace(movePattern, (match) => {
+  MOVE_PATTERN.lastIndex = 0;
+  return text.replace(MOVE_PATTERN, (match) => {
     const parsed = parseMove(match);
     if (!parsed) return match;
     const spoken = moveToSpeech(parsed);
     return spoken || match;
   });
+}
+
+// ─── Text processor with move range mapping ──────────────────────────────────
+
+/**
+ * Process a full prose string like {@link processText}, but also return
+ * a mapping of where each move's spoken text falls in the output string.
+ * This allows callers to highlight board squares in sync with speech.
+ *
+ * Castling moves are excluded from moveRanges (no clear destination square).
+ */
+export function processTextWithMoveMap(text: string): {
+  processed: string;
+  moveRanges: MoveRange[];
+} {
+  if (!text) return { processed: text, moveRanges: [] };
+
+  const moveRanges: MoveRange[] = [];
+  let result = '';
+  let lastIndex = 0;
+
+  MOVE_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = MOVE_PATTERN.exec(text)) !== null) {
+    const parsed = parseMove(match[0]);
+    if (!parsed) {
+      // Not a valid move — keep original text
+      continue;
+    }
+
+    const spoken = moveToSpeech(parsed);
+    if (!spoken) continue;
+
+    // Append everything before this match (unchanged)
+    result += text.slice(lastIndex, match.index);
+
+    const charStart = result.length;
+    result += spoken;
+    const charEnd = result.length;
+
+    // Record the range for non-castling moves
+    if (!parsed.isCastleKingside && !parsed.isCastleQueenside) {
+      moveRanges.push({
+        charStart,
+        charEnd,
+        square: parsed.toSquare,
+      });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Append any remaining text after the last match
+  result += text.slice(lastIndex);
+
+  return { processed: result, moveRanges };
 }

@@ -49,6 +49,14 @@ export interface ParsedMove {
   isCastleQueenside: boolean;
 }
 
+// ─── Move range mapping (for timed board highlighting) ──────────────────────────
+
+export interface MoveRange {
+  charStart: number;
+  charEnd: number;
+  square: string;
+}
+
 // ─── DOM selector groups ───────────────────────────────────────────────────────
 
 export interface SelectorGroup {
@@ -59,6 +67,12 @@ export interface SelectorGroup {
   commentContainer: string[];
 }
 
+// ─── TTS state machine ──────────────────────────────────────────────────────
+
+export type TTSState = 'idle' | 'detecting' | 'speaking' | 'cooldown';
+
+export type PlaybackState = 'idle' | 'speaking' | 'paused';
+
 // ─── Debug API exposed on window ──────────────────────────────────────────────
 
 export interface ChessableTTSDebug {
@@ -67,6 +81,8 @@ export interface ChessableTTSDebug {
   settings: TTSSettings;
   selectors: SelectorGroup;
   testNotation: (text: string) => void;
+  state: TTSState;
+  resetState: () => void;
 }
 
 declare global {

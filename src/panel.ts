@@ -5,24 +5,34 @@
  * Provides quick controls without needing to open the extension popup.
  *
  * Controls:
- *   - Enable/disable toggle (syncs with chrome.storage.sync)
- *   - Volume slider
- *   - "Read current" button — reads currently visible explanation text
+ *   - Enable/disable toggle
+ *   - Rate, pitch, volume sliders
+ *   - Voice selector
+ *   - "Read current" button + playback controls (pause/restart)
+ *   - Read move / read explanation checkboxes
  *   - Debug overlay toggle
  *   - Collapse/expand button
  *
  * All styles are scoped inside a shadow DOM to avoid conflicts with Chessable.
  */
 
-import type { TTSSettings } from './types';
+import type { PlaybackState, TTSSettings } from './types';
 
 // ─── Callbacks ──────────────────────────────────────────────────────────────
 
 export interface PanelCallbacks {
   onToggleEnabled: (enabled: boolean) => void;
+  onRateChange: (rate: number) => void;
+  onPitchChange: (pitch: number) => void;
   onVolumeChange: (volume: number) => void;
+  onVoiceChange: (voice: string) => void;
+  onReadMoveChange: (on: boolean) => void;
+  onReadExplanationChange: (on: boolean) => void;
   onReadCurrent: () => void;
   onToggleDebug: (debugOn: boolean) => void;
+  onPause: () => void;
+  onResume: () => void;
+  onRestart: () => void;
 }
 
 // ─── Panel class ────────────────────────────────────────────────────────────
@@ -35,12 +45,22 @@ export class ControlPanel {
 
   // Element refs inside shadow
   private toggleInput!: HTMLInputElement;
+  private rateSlider!: HTMLInputElement;
+  private rateVal!: HTMLSpanElement;
+  private pitchSlider!: HTMLInputElement;
+  private pitchVal!: HTMLSpanElement;
   private volumeSlider!: HTMLInputElement;
   private volumeVal!: HTMLSpanElement;
+  private voiceSelect!: HTMLSelectElement;
+  private readMoveInput!: HTMLInputElement;
+  private readExplanationInput!: HTMLInputElement;
   private debugInput!: HTMLInputElement;
   private panelBody!: HTMLDivElement;
   private collapseBtn!: HTMLButtonElement;
   private statusDot!: HTMLSpanElement;
+  private pauseBtn!: HTMLButtonElement;
+  private restartBtn!: HTMLButtonElement;
+  private playbackState: PlaybackState = 'idle';
 
   // Drag state
   private isDragging = false;
@@ -65,6 +85,7 @@ export class ControlPanel {
     this.shadow = this.host.attachShadow({ mode: 'closed' });
     this.buildPanel();
     this.setupDrag();
+    this.populateVoices();
   }
 
   // ─── Build DOM ──────────────────────────────────────────────────────────
@@ -78,10 +99,10 @@ export class ControlPanel {
     wrapper.className = 'panel';
     wrapper.innerHTML = `
       <div class="panel-header" data-drag-handle>
-        <span class="panel-logo">♟</span>
+        <span class="panel-logo">\u265F</span>
         <span class="panel-title">TTS</span>
         <span class="status-dot on" data-ref="statusDot"></span>
-        <button class="collapse-btn" data-ref="collapseBtn" title="Collapse">−</button>
+        <button class="collapse-btn" data-ref="collapseBtn" title="Collapse">\u2212</button>
       </div>
       <div class="panel-body" data-ref="panelBody">
         <div class="control-row">
@@ -91,15 +112,63 @@ export class ControlPanel {
             <span class="switch-track"></span>
           </label>
         </div>
+
+        <div class="separator"></div>
+
+        <div class="control-row">
+          <span class="label">Speed</span>
+          <input type="range" class="slider" data-ref="rateSlider"
+                 min="0.5" max="2" step="0.05" value="1" />
+          <span class="slider-val" data-ref="rateVal">1.0\u00d7</span>
+        </div>
+        <div class="control-row">
+          <span class="label">Pitch</span>
+          <input type="range" class="slider" data-ref="pitchSlider"
+                 min="0.5" max="2" step="0.05" value="1" />
+          <span class="slider-val" data-ref="pitchVal">1.0</span>
+        </div>
         <div class="control-row">
           <span class="label">Volume</span>
-          <input type="range" class="vol-slider" data-ref="volumeSlider"
+          <input type="range" class="slider" data-ref="volumeSlider"
                  min="0" max="1" step="0.05" value="1" />
-          <span class="vol-val" data-ref="volumeVal">100%</span>
+          <span class="slider-val" data-ref="volumeVal">100%</span>
         </div>
+        <div class="control-row">
+          <span class="label">Voice</span>
+          <select data-ref="voiceSelect" class="voice-select">
+            <option value="">Default</option>
+          </select>
+        </div>
+
+        <div class="separator"></div>
+
+        <div class="control-row">
+          <label class="check-row">
+            <input type="checkbox" data-ref="readMoveInput" checked />
+            <span class="check-box"></span>
+            <span class="check-label">Read move</span>
+          </label>
+        </div>
+        <div class="control-row">
+          <label class="check-row">
+            <input type="checkbox" data-ref="readExplanationInput" checked />
+            <span class="check-box"></span>
+            <span class="check-label">Read explanation</span>
+          </label>
+        </div>
+
+        <div class="separator"></div>
+
         <div class="control-row">
           <button class="btn-read" data-ref="readBtn">Read Current</button>
         </div>
+        <div class="control-row playback-row">
+          <button class="btn-playback" data-ref="pauseBtn" disabled title="Pause">\u23F8</button>
+          <button class="btn-playback" data-ref="restartBtn" disabled title="Restart">\u21BA</button>
+        </div>
+
+        <div class="separator"></div>
+
         <div class="control-row">
           <span class="label">Debug</span>
           <label class="switch">
@@ -113,21 +182,43 @@ export class ControlPanel {
     this.shadow.appendChild(wrapper);
 
     // Bind refs
-    this.toggleInput  = this.ref<HTMLInputElement>(wrapper, 'toggleInput');
-    this.volumeSlider = this.ref<HTMLInputElement>(wrapper, 'volumeSlider');
-    this.volumeVal    = this.ref<HTMLSpanElement>(wrapper, 'volumeVal');
-    this.debugInput   = this.ref<HTMLInputElement>(wrapper, 'debugInput');
-    this.panelBody    = this.ref<HTMLDivElement>(wrapper, 'panelBody');
-    this.collapseBtn  = this.ref<HTMLButtonElement>(wrapper, 'collapseBtn');
-    this.statusDot    = this.ref<HTMLSpanElement>(wrapper, 'statusDot');
+    this.toggleInput         = this.ref<HTMLInputElement>(wrapper, 'toggleInput');
+    this.rateSlider          = this.ref<HTMLInputElement>(wrapper, 'rateSlider');
+    this.rateVal             = this.ref<HTMLSpanElement>(wrapper, 'rateVal');
+    this.pitchSlider         = this.ref<HTMLInputElement>(wrapper, 'pitchSlider');
+    this.pitchVal            = this.ref<HTMLSpanElement>(wrapper, 'pitchVal');
+    this.volumeSlider        = this.ref<HTMLInputElement>(wrapper, 'volumeSlider');
+    this.volumeVal           = this.ref<HTMLSpanElement>(wrapper, 'volumeVal');
+    this.voiceSelect         = this.ref<HTMLSelectElement>(wrapper, 'voiceSelect');
+    this.readMoveInput       = this.ref<HTMLInputElement>(wrapper, 'readMoveInput');
+    this.readExplanationInput = this.ref<HTMLInputElement>(wrapper, 'readExplanationInput');
+    this.debugInput          = this.ref<HTMLInputElement>(wrapper, 'debugInput');
+    this.panelBody           = this.ref<HTMLDivElement>(wrapper, 'panelBody');
+    this.collapseBtn         = this.ref<HTMLButtonElement>(wrapper, 'collapseBtn');
+    this.statusDot           = this.ref<HTMLSpanElement>(wrapper, 'statusDot');
+    this.pauseBtn            = this.ref<HTMLButtonElement>(wrapper, 'pauseBtn');
+    this.restartBtn          = this.ref<HTMLButtonElement>(wrapper, 'restartBtn');
 
     const readBtn = this.ref<HTMLButtonElement>(wrapper, 'readBtn');
 
-    // Event listeners
+    // ── Event listeners ──────────────────────────────────────────────────
+
     this.toggleInput.addEventListener('change', () => {
       const on = this.toggleInput.checked;
       this.statusDot.className = on ? 'status-dot on' : 'status-dot off';
       this.callbacks.onToggleEnabled(on);
+    });
+
+    this.rateSlider.addEventListener('input', () => {
+      const rate = parseFloat(this.rateSlider.value);
+      this.rateVal.textContent = `${rate.toFixed(1)}\u00d7`;
+      this.callbacks.onRateChange(rate);
+    });
+
+    this.pitchSlider.addEventListener('input', () => {
+      const pitch = parseFloat(this.pitchSlider.value);
+      this.pitchVal.textContent = pitch.toFixed(1);
+      this.callbacks.onPitchChange(pitch);
     });
 
     this.volumeSlider.addEventListener('input', () => {
@@ -136,12 +227,36 @@ export class ControlPanel {
       this.callbacks.onVolumeChange(vol);
     });
 
+    this.voiceSelect.addEventListener('change', () => {
+      this.callbacks.onVoiceChange(this.voiceSelect.value);
+    });
+
+    this.readMoveInput.addEventListener('change', () => {
+      this.callbacks.onReadMoveChange(this.readMoveInput.checked);
+    });
+
+    this.readExplanationInput.addEventListener('change', () => {
+      this.callbacks.onReadExplanationChange(this.readExplanationInput.checked);
+    });
+
     readBtn.addEventListener('click', () => {
       this.callbacks.onReadCurrent();
     });
 
     this.debugInput.addEventListener('change', () => {
       this.callbacks.onToggleDebug(this.debugInput.checked);
+    });
+
+    this.pauseBtn.addEventListener('click', () => {
+      if (this.playbackState === 'speaking') {
+        this.callbacks.onPause();
+      } else if (this.playbackState === 'paused') {
+        this.callbacks.onResume();
+      }
+    });
+
+    this.restartBtn.addEventListener('click', () => {
+      this.callbacks.onRestart();
     });
 
     this.collapseBtn.addEventListener('click', () => {
@@ -153,6 +268,35 @@ export class ControlPanel {
     const el = root.querySelector(`[data-ref="${name}"]`);
     if (!el) throw new Error(`[ChessableTTS Panel] Missing ref: ${name}`);
     return el as T;
+  }
+
+  // ─── Voice population ────────────────────────────────────────────────
+
+  private populateVoices(savedVoice = ''): void {
+    const voices = window.speechSynthesis.getVoices();
+
+    // Clear all options except the default
+    while (this.voiceSelect.options.length > 1) {
+      this.voiceSelect.remove(1);
+    }
+
+    for (const v of voices) {
+      const opt = document.createElement('option');
+      opt.value = v.name;
+      opt.textContent = `${v.name} (${v.lang})`;
+      if (v.name === savedVoice) opt.selected = true;
+      this.voiceSelect.appendChild(opt);
+    }
+  }
+
+  /** Re-populate voices when the browser has loaded them async. */
+  initVoiceList(savedVoice: string): void {
+    this.populateVoices(savedVoice);
+
+    // Voices may load asynchronously — listen for the event
+    window.speechSynthesis.onvoiceschanged = () => {
+      this.populateVoices(savedVoice);
+    };
   }
 
   // ─── Drag ───────────────────────────────────────────────────────────────
@@ -192,7 +336,7 @@ export class ControlPanel {
   private toggleCollapse(): void {
     this.collapsed = !this.collapsed;
     this.panelBody.style.display = this.collapsed ? 'none' : '';
-    this.collapseBtn.textContent = this.collapsed ? '+' : '−';
+    this.collapseBtn.textContent = this.collapsed ? '+' : '\u2212';
     this.collapseBtn.title = this.collapsed ? 'Expand' : 'Collapse';
   }
 
@@ -208,17 +352,50 @@ export class ControlPanel {
     this.host.remove();
   }
 
-  /** Sync panel controls with current settings */
-  updateFromSettings(settings: TTSSettings): void {
-    this.toggleInput.checked  = settings.enabled;
-    this.volumeSlider.value   = String(settings.volume);
-    this.volumeVal.textContent = `${Math.round(settings.volume * 100)}%`;
-    this.debugInput.checked   = settings.debugMode;
-    this.statusDot.className  = settings.enabled ? 'status-dot on' : 'status-dot off';
+  /** Sync all panel controls with current settings */
+  updateFromSettings(s: TTSSettings): void {
+    this.toggleInput.checked           = s.enabled;
+    this.rateSlider.value              = String(s.rate);
+    this.rateVal.textContent           = `${s.rate.toFixed(1)}\u00d7`;
+    this.pitchSlider.value             = String(s.pitch);
+    this.pitchVal.textContent          = s.pitch.toFixed(1);
+    this.volumeSlider.value            = String(s.volume);
+    this.volumeVal.textContent         = `${Math.round(s.volume * 100)}%`;
+    this.readMoveInput.checked         = s.readMoveFirst;
+    this.readExplanationInput.checked  = s.readExplanation;
+    this.debugInput.checked            = s.debugMode;
+    this.statusDot.className           = s.enabled ? 'status-dot on' : 'status-dot off';
+
+    // Voice: set value if it's in the list, otherwise leave on default
+    this.voiceSelect.value = s.voice;
   }
 
   setDebugChecked(on: boolean): void {
     this.debugInput.checked = on;
+  }
+
+  setPlaybackState(state: PlaybackState): void {
+    this.playbackState = state;
+    switch (state) {
+      case 'idle':
+        this.pauseBtn.disabled = true;
+        this.restartBtn.disabled = true;
+        this.pauseBtn.textContent = '\u23F8';
+        this.pauseBtn.title = 'Pause';
+        break;
+      case 'speaking':
+        this.pauseBtn.disabled = false;
+        this.restartBtn.disabled = false;
+        this.pauseBtn.textContent = '\u23F8';
+        this.pauseBtn.title = 'Pause';
+        break;
+      case 'paused':
+        this.pauseBtn.disabled = false;
+        this.restartBtn.disabled = false;
+        this.pauseBtn.textContent = '\u25B6';
+        this.pauseBtn.title = 'Resume';
+        break;
+    }
   }
 
   // ─── Styles ──────────────────────────────────────────────────────────────
@@ -236,7 +413,7 @@ export class ControlPanel {
       }
 
       .panel {
-        width: 220px;
+        width: 230px;
         background: #0f0e0d;
         border: 1px solid #2e2c29;
         border-radius: 10px;
@@ -316,7 +493,9 @@ export class ControlPanel {
         padding: 10px;
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 8px;
+        max-height: 420px;
+        overflow-y: auto;
       }
 
       .control-row {
@@ -328,8 +507,14 @@ export class ControlPanel {
       .label {
         font-size: 11px;
         color: #7a7470;
-        min-width: 50px;
+        min-width: 46px;
         flex-shrink: 0;
+      }
+
+      .separator {
+        height: 1px;
+        background: #2e2c29;
+        margin: 2px 0;
       }
 
       /* ── Toggle switch ── */
@@ -368,8 +553,8 @@ export class ControlPanel {
       .switch input:checked + .switch-track { background: #c8a96e; }
       .switch input:checked + .switch-track::after { transform: translateX(15px); }
 
-      /* ── Volume slider ── */
-      .vol-slider {
+      /* ── Sliders ── */
+      .slider {
         flex: 1;
         -webkit-appearance: none;
         appearance: none;
@@ -379,7 +564,7 @@ export class ControlPanel {
         outline: none;
         cursor: pointer;
       }
-      .vol-slider::-webkit-slider-thumb {
+      .slider::-webkit-slider-thumb {
         -webkit-appearance: none;
         width: 12px;
         height: 12px;
@@ -388,12 +573,67 @@ export class ControlPanel {
         cursor: pointer;
       }
 
-      .vol-val {
+      .slider-val {
         font-size: 10px;
         color: #c8a96e;
         min-width: 28px;
         text-align: right;
         font-family: monospace;
+      }
+
+      /* ── Voice select ── */
+      .voice-select {
+        flex: 1;
+        min-width: 0;
+        background: #1a1917;
+        border: 1px solid #2e2c29;
+        color: #e8e4dc;
+        padding: 4px 6px;
+        border-radius: 4px;
+        font-family: inherit;
+        font-size: 10px;
+        outline: none;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+      }
+      .voice-select:focus { border-color: #c8a96e; }
+
+      /* ── Checkbox rows ── */
+      .check-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      .check-row input[type=checkbox] { display: none; }
+      .check-box {
+        width: 14px;
+        height: 14px;
+        border: 1.5px solid #2e2c29;
+        border-radius: 3px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .check-row input:checked ~ .check-box {
+        background: #c8a96e;
+        border-color: #c8a96e;
+      }
+      .check-row input:checked ~ .check-box::after {
+        content: '';
+        display: block;
+        width: 8px;
+        height: 4px;
+        border-left: 1.5px solid #0f0e0d;
+        border-bottom: 1.5px solid #0f0e0d;
+        transform: translateY(-1px) rotate(-45deg);
+      }
+      .check-label {
+        color: #7a7470;
       }
 
       /* ── Read button ── */
@@ -415,6 +655,35 @@ export class ControlPanel {
         color: #c8a96e;
       }
       .btn-read:active { opacity: 0.7; }
+
+      /* ── Playback controls ── */
+      .playback-row {
+        gap: 6px;
+        justify-content: center;
+      }
+
+      .btn-playback {
+        flex: 1;
+        padding: 6px 10px;
+        background: transparent;
+        border: 1px solid #2e2c29;
+        border-radius: 6px;
+        color: #7a7470;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: border-color 0.15s, color 0.15s;
+      }
+      .btn-playback:hover:not(:disabled) {
+        border-color: #c8a96e;
+        color: #c8a96e;
+      }
+      .btn-playback:active:not(:disabled) { opacity: 0.7; }
+      .btn-playback:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+      }
     `;
   }
 }
