@@ -81,6 +81,10 @@ let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 let collectedTriggers: Element[] = [];
 const DETECT_WINDOW_MS = 300;
 const COOLDOWN_MS = 1500;
+const STARTUP_GRACE_MS = 2000;
+
+/** Suppresses observer triggers during initial page render. */
+let initialLoadComplete = false;
 
 // ─── Word highlighting + playback state ──────────────────────────────────────
 
@@ -797,17 +801,6 @@ function isWrongMoveTrigger(el: Element): boolean {
     return true;
   }
 
-  // Contains an explanation text element
-  for (const sel of SELECTORS.explanationText) {
-    try {
-      if (el.matches(sel) || el.querySelector(sel)) {
-        return true;
-      }
-    } catch {
-      // Invalid selector — skip
-    }
-  }
-
   return false;
 }
 
@@ -832,7 +825,7 @@ function isWrongMoveAttributeChange(mutation: MutationRecord, el: Element): bool
 // ─── MutationObserver ─────────────────────────────────────────────────────────
 
 const observer = new MutationObserver((mutations: MutationRecord[]) => {
-  if (!settings.enabled) return;
+  if (!settings.enabled || !initialLoadComplete) return;
 
   for (const mutation of mutations) {
     // ── Newly added nodes ──────────────────────────────────────────────────
@@ -1008,7 +1001,14 @@ function startObserver(): void {
     attributes: true,
     attributeFilter: ['class', 'data-state', 'aria-hidden'],
   });
-  console.log('[ChessableTTS] Observer active (state machine).');
+
+  // Wait for initial page render to settle before processing mutations.
+  // This prevents the observer from triggering on DOM nodes added during
+  // the initial page load (e.g. the site header, nav, sidebar).
+  setTimeout(() => {
+    initialLoadComplete = true;
+    console.log('[ChessableTTS] Observer active (state machine).');
+  }, STARTUP_GRACE_MS);
 }
 
 function bootstrap(): void {

@@ -125,11 +125,11 @@ All strict flags are on, including `noUncheckedIndexedAccess` and
 |-----|--------|
 | `Nf3` | Knight to f 3 |
 | `Bxe5+` | Bishop takes e 5 check |
-| `exd5` | e pawn takes d 5 |
+| `exd5` | e takes d 5 |
 | `O-O` | Kingside castle |
 | `O-O-O` | Queenside castle |
 | `Rxd8#` | Rook takes d 8 checkmate |
-| `e8=Q` | pawn to e 8 promotes to Queen |
+| `e8=Q` | e 8 promotes to Queen |
 | `Nbd7` | Knight on b to d 7 |
 | `R1e4` | Rook on 1 to e 4 |
-| `e8=Q+` | pawn to e 8 promotes to Queen check |
+| `e8=Q+` | e 8 promotes to Queen check |

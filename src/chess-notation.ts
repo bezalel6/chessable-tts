@@ -6,8 +6,8 @@
  *   "Nf3"     → "Knight to f 3"
  *   "Bxe5+"   → "Bishop takes e 5 check"
  *   "O-O-O"   → "Queenside castle"
- *   "exd5"    → "e pawn takes d 5"
- *   "e8=Q"    → "pawn to e 8, promotes to Queen"
+ *   "exd5"    → "e takes d 5"
+ *   "e8=Q"    → "e 8 promotes to Queen"
  *   "Nbd7"    → "Knight on b to d 7"
  *   "R1e4"    → "Rook on 1 to e 4"
  *   "Rxd8#"   → "Rook takes d 8 checkmate"
@@ -138,13 +138,9 @@ export function moveToSpeech(parsed: ParsedMove): string {
     // ── Piece or pawn ──────────────────────────────────────────────────────
     if (parsed.piece) {
       parts.push(PIECE_NAMES[parsed.piece]);
-    } else {
-      // Pawn — include disambiguating file if it's a capture
-      if (parsed.fromFile && parsed.isCapture) {
-        parts.push(`${parsed.fromFile} pawn`);
-      } else {
-        parts.push('pawn');
-      }
+    } else if (parsed.fromFile && parsed.isCapture) {
+      // Pawn capture — include the originating file letter (e.g. "e takes d5")
+      parts.push(parsed.fromFile);
     }
 
     // ── Disambiguation for pieces (Nbd7, R1e4) ────────────────────────────
@@ -154,7 +150,13 @@ export function moveToSpeech(parsed: ParsedMove): string {
     }
 
     // ── Verb ──────────────────────────────────────────────────────────────
-    parts.push(parsed.isCapture ? 'takes' : 'to');
+    // Pieces always get a verb ("Knight to f3", "Rook takes d8").
+    // Pawns: captures get "takes" ("e takes d5"), quiet moves get nothing ("e 4").
+    if (parsed.piece) {
+      parts.push(parsed.isCapture ? 'takes' : 'to');
+    } else if (parsed.isCapture) {
+      parts.push('takes');
+    }
 
     // ── Destination ───────────────────────────────────────────────────────
     parts.push(speakSquare(parsed.toSquare));
