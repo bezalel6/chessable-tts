@@ -8,7 +8,6 @@ export interface TTSSettings {
   voice: string;      // SpeechSynthesisVoice.name, or '' for default
   readMoveFirst: boolean;
   readExplanation: boolean;
-  debugMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: TTSSettings = {
@@ -19,14 +18,21 @@ export const DEFAULT_SETTINGS: TTSSettings = {
   voice: '',
   readMoveFirst: true,
   readExplanation: true,
-  debugMode: false,
 };
 
 // ─── Messages (popup ↔ content script) ────────────────────────────────────────
 
+export type PlaybackState = 'idle' | 'speaking' | 'paused';
+
 export type ExtensionMessage =
   | { type: 'SETTINGS_UPDATED'; settings: Partial<TTSSettings> }
-  | { type: 'TEST_SPEAK' };
+  | { type: 'TEST_SPEAK' }
+  | { type: 'READ_CURRENT' }
+  | { type: 'PAUSE_SPEECH' }
+  | { type: 'RESUME_SPEECH' }
+  | { type: 'RESTART_SPEECH' }
+  | { type: 'GET_PLAYBACK_STATE' }
+  | { type: 'PLAYBACK_STATE_CHANGED'; state: PlaybackState };
 
 // ─── Chess notation types ──────────────────────────────────────────────────────
 
@@ -70,8 +76,6 @@ export interface SelectorGroup {
 // ─── TTS state machine ──────────────────────────────────────────────────────
 
 export type TTSState = 'idle' | 'detecting' | 'speaking' | 'cooldown';
-
-export type PlaybackState = 'idle' | 'speaking' | 'paused';
 
 // ─── Debug API exposed on window ──────────────────────────────────────────────
 

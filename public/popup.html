@@ -19,6 +19,7 @@
       --text-muted: #7a7470;
       --success: #4caf82;
       --danger: #c25f5f;
+      --warning: #e6a740;
       --radius: 8px;
     }
 
@@ -242,9 +243,8 @@
       background: var(--border);
     }
 
-    /* ── Test button ── */
-    .btn-test {
-      width: 100%;
+    /* ── Buttons (shared) ── */
+    .btn {
       padding: 9px 14px;
       background: transparent;
       border: 1.5px solid var(--border);
@@ -260,11 +260,33 @@
       justify-content: center;
       gap: 6px;
     }
-    .btn-test:hover {
+    .btn:hover {
       border-color: var(--accent-dim);
       color: var(--accent);
     }
-    .btn-test:active { opacity: 0.7; }
+    .btn:active { opacity: 0.7; }
+    .btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+    .btn:disabled:hover {
+      border-color: var(--border);
+      color: var(--text-muted);
+    }
+
+    /* ── Playback controls ── */
+    .playback-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .playback-row .btn {
+      flex: 1;
+    }
+
+    .btn-read {
+      width: 100%;
+    }
 
     /* ── Footer ── */
     .footer {
@@ -284,6 +306,20 @@
       flex-shrink: 0;
     }
     .status-dot.off { background: var(--text-muted); box-shadow: none; }
+    .status-dot.speaking {
+      background: var(--success);
+      box-shadow: 0 0 6px var(--success);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .status-dot.paused {
+      background: var(--warning);
+      box-shadow: 0 0 6px var(--warning);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
 
     .status-text {
       font-size: 11px;
@@ -369,20 +405,27 @@
 
     <div class="divider"></div>
 
-    <!-- Debug -->
+    <!-- Playback -->
     <div>
-      <div class="section-label">Developer</div>
-      <label class="check-row">
-        <input type="checkbox" id="checkDebugMode" />
-        <span class="check-box"></span>
-        <span class="check-label">Debug overlay (highlight detected elements)</span>
-      </label>
+      <div class="section-label">Playback</div>
+      <button class="btn btn-read" id="btnReadCurrent">
+        <span>▶</span> Read Current
+      </button>
+      <div class="playback-row" style="margin-top: 8px;">
+        <button class="btn" id="btnPauseResume" disabled>
+          <span id="pauseResumeIcon">⏸</span>
+          <span id="pauseResumeLabel">Pause</span>
+        </button>
+        <button class="btn" id="btnRestart" disabled>
+          <span>↺</span> Restart
+        </button>
+      </div>
     </div>
 
     <div class="divider"></div>
 
     <!-- Test -->
-    <button class="btn-test" id="btnTest">
+    <button class="btn" id="btnTest" style="width: 100%;">
       <span>▶</span> Test voice
     </button>
   </div>

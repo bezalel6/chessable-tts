@@ -27,7 +27,9 @@ src/
   types.ts            — All shared interfaces & type definitions (start here)
   chess-notation.ts   — Pure SAN → spoken English parser; no Chrome/DOM deps
   content.ts          — Content script: MutationObserver + Web Speech API
-  popup.ts            — Popup UI: reads/writes chrome.storage.sync, sends messages
+  popup.ts            — Popup UI: settings, playback controls, tab messaging
+  board-highlighter.ts — Board square highlighting during speech
+  word-highlighter.ts  — Word-level text highlighting during speech
 public/               — Static assets copied verbatim into dist/ by webpack
   manifest.json
   popup.html
@@ -43,8 +45,12 @@ tsconfig.json         — noEmit:true (tsc is typecheck-only; webpack does the b
 
 ### Message flow
 ```
-popup.ts  ──(chrome.tabs.sendMessage)──▶  content.ts
-             SETTINGS_UPDATED | TEST_SPEAK
+popup.ts ──(chrome.tabs.sendMessage)──▶ content.ts
+  SETTINGS_UPDATED (partial) | TEST_SPEAK | READ_CURRENT
+  PAUSE_SPEECH | RESUME_SPEECH | RESTART_SPEECH | GET_PLAYBACK_STATE
+
+content.ts ──(chrome.runtime.sendMessage)──▶ popup.ts
+  PLAYBACK_STATE_CHANGED { state: PlaybackState }
 ```
 All message shapes are typed in `types.ts` as the `ExtensionMessage` discriminated union.
 Adding a new message type: add the variant to `ExtensionMessage` first, then handle it
@@ -52,10 +58,16 @@ in `content.ts`'s `chrome.runtime.onMessage` listener.
 
 ### Settings
 `TTSSettings` in `types.ts` is the canonical shape. `DEFAULT_SETTINGS` (also in `types.ts`)
-is the fallback used by both the popup and the content script. When adding a new setting:
+is the fallback used by both the popup and the content script.
+
+Settings are sent as **partial updates** — only the changed key is persisted and
+broadcast via `SETTINGS_UPDATED`. The content script merges partials into its local
+copy. The popup uses `chrome.storage.onChanged` to reactively update its UI.
+
+When adding a new setting:
 1. Add the field to `TTSSettings` and `DEFAULT_SETTINGS` in `types.ts`
 2. Add the control to `public/popup.html`
-3. Wire it up in `popup.ts` (`readSettings`, `saveAndBroadcast`, load block)
+3. Wire it up in `popup.ts` (load block, `saveAndSend()` call, storage listener)
 4. Consume it in `content.ts`
 
 ### Chess notation pipeline

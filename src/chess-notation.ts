@@ -193,6 +193,24 @@ export function moveToSpeech(parsed: ParsedMove): string {
 export const MOVE_PATTERN =
   /\b(?:\d+\.{1,3}\s*)?(?:O-O-O|O-O|0-0-0|0-0|[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#!?]*)/g;
 
+// ─── Move number cleaning ─────────────────────────────────────────────────────
+
+/**
+ * Strip standalone PGN move numbers from prose text before SAN matching.
+ *
+ * Handles: "3.", "12...", "1. ", and unicode ellipsis "3…" variants.
+ * Move numbers that are already attached to a SAN token (e.g. "3.Nf3") are
+ * handled by MOVE_PATTERN's optional prefix — this function only targets
+ * standalone numbers that would otherwise be read aloud as literal text.
+ */
+export function cleanMoveNumbers(text: string): string {
+  return text
+    .replace(/\u2026/g, '...')           // Unicode ellipsis → dots
+    .replace(/\b\d+\.{1,3}\s*/g, '')     // Strip standalone move numbers
+    .replace(/\s{2,}/g, ' ')             // Collapse whitespace
+    .trim();
+}
+
 // ─── Text processor ───────────────────────────────────────────────────────────
 
 /**
@@ -202,8 +220,9 @@ export const MOVE_PATTERN =
 export function processText(text: string): string {
   if (!text) return text;
 
+  const cleaned = cleanMoveNumbers(text);
   MOVE_PATTERN.lastIndex = 0;
-  return text.replace(MOVE_PATTERN, (match) => {
+  return cleaned.replace(MOVE_PATTERN, (match) => {
     const parsed = parseMove(match);
     if (!parsed) return match;
     const spoken = moveToSpeech(parsed);
@@ -226,6 +245,7 @@ export function processTextWithMoveMap(text: string): {
 } {
   if (!text) return { processed: text, moveRanges: [] };
 
+  const cleaned = cleanMoveNumbers(text);
   const moveRanges: MoveRange[] = [];
   let result = '';
   let lastIndex = 0;
@@ -233,7 +253,7 @@ export function processTextWithMoveMap(text: string): {
   MOVE_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = MOVE_PATTERN.exec(text)) !== null) {
+  while ((match = MOVE_PATTERN.exec(cleaned)) !== null) {
     const parsed = parseMove(match[0]);
     if (!parsed) {
       // Not a valid move — keep original text
@@ -244,7 +264,7 @@ export function processTextWithMoveMap(text: string): {
     if (!spoken) continue;
 
     // Append everything before this match (unchanged)
-    result += text.slice(lastIndex, match.index);
+    result += cleaned.slice(lastIndex, match.index);
 
     const charStart = result.length;
     result += spoken;
@@ -263,7 +283,7 @@ export function processTextWithMoveMap(text: string): {
   }
 
   // Append any remaining text after the last match
-  result += text.slice(lastIndex);
+  result += cleaned.slice(lastIndex);
 
   return { processed: result, moveRanges };
 }

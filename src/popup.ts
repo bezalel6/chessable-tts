@@ -1,11 +1,13 @@
 /**
  * popup.ts — Chessable TTS Popup
  *
- * Manages the extension's settings UI. Changes are persisted to chrome.storage.sync
- * and broadcast to any active Chessable tabs.
+ * Manages the extension's settings UI and playback controls. Settings changes
+ * are persisted to chrome.storage.sync and sent as partial updates to content
+ * scripts. Playback state is received from content scripts and reflected in
+ * the UI.
  */
 
-import { DEFAULT_SETTINGS, ExtensionMessage, TTSSettings } from './types';
+import { DEFAULT_SETTINGS, ExtensionMessage, PlaybackState, TTSSettings } from './types';
 
 // ─── Element helpers ──────────────────────────────────────────────────────────
 
@@ -28,11 +30,44 @@ const controls = {
   volumeVal:       getEl<HTMLSpanElement>('volumeVal'),
   readMove:        getEl<HTMLInputElement>('checkReadMove'),
   readExplanation: getEl<HTMLInputElement>('checkReadExplanation'),
-  debugMode:       getEl<HTMLInputElement>('checkDebugMode'),
   btnTest:         getEl<HTMLButtonElement>('btnTest'),
+  btnReadCurrent:  getEl<HTMLButtonElement>('btnReadCurrent'),
+  btnPauseResume:  getEl<HTMLButtonElement>('btnPauseResume'),
+  btnRestart:      getEl<HTMLButtonElement>('btnRestart'),
+  pauseResumeIcon: getEl<HTMLSpanElement>('pauseResumeIcon'),
+  pauseResumeLabel: getEl<HTMLSpanElement>('pauseResumeLabel'),
   statusDot:       getEl<HTMLSpanElement>('statusDot'),
   statusText:      getEl<HTMLSpanElement>('statusText'),
 } as const;
+
+// ─── Playback state ──────────────────────────────────────────────────────────
+
+let currentPlaybackState: PlaybackState = 'idle';
+
+function updatePlaybackUI(pbState: PlaybackState): void {
+  currentPlaybackState = pbState;
+
+  switch (pbState) {
+    case 'idle':
+      controls.btnPauseResume.disabled = true;
+      controls.btnRestart.disabled = true;
+      controls.pauseResumeIcon.textContent = '\u23F8';
+      controls.pauseResumeLabel.textContent = 'Pause';
+      break;
+    case 'speaking':
+      controls.btnPauseResume.disabled = false;
+      controls.btnRestart.disabled = false;
+      controls.pauseResumeIcon.textContent = '\u23F8';
+      controls.pauseResumeLabel.textContent = 'Pause';
+      break;
+    case 'paused':
+      controls.btnPauseResume.disabled = false;
+      controls.btnRestart.disabled = false;
+      controls.pauseResumeIcon.textContent = '\u25B6';
+      controls.pauseResumeLabel.textContent = 'Resume';
+      break;
+  }
+}
 
 // ─── Voice population ─────────────────────────────────────────────────────────
 
@@ -70,7 +105,6 @@ chrome.storage.sync.get(
     if (stored.volume   !== undefined) controls.volume.value      = String(stored.volume);
     if (stored.readMoveFirst    !== undefined) controls.readMove.checked        = stored.readMoveFirst;
     if (stored.readExplanation  !== undefined) controls.readExplanation.checked = stored.readExplanation;
-    if (stored.debugMode        !== undefined) controls.debugMode.checked       = stored.debugMode;
 
     updateDisplayValues();
     updateStatus();
@@ -81,7 +115,7 @@ chrome.storage.sync.get(
 // ─── Display helpers ──────────────────────────────────────────────────────────
 
 function updateDisplayValues(): void {
-  controls.rateVal.textContent   = `${parseFloat(controls.rate.value).toFixed(1)}×`;
+  controls.rateVal.textContent   = `${parseFloat(controls.rate.value).toFixed(1)}\u00d7`;
   controls.pitchVal.textContent  = parseFloat(controls.pitch.value).toFixed(1);
   controls.volumeVal.textContent = `${Math.round(parseFloat(controls.volume.value) * 100)}%`;
 }
@@ -89,42 +123,69 @@ function updateDisplayValues(): void {
 function updateStatus(): void {
   const on = controls.enabled.checked;
   document.body.classList.toggle('disabled', !on);
-  controls.statusDot.classList.toggle('off', !on);
-  controls.statusText.textContent = on ? 'Active on Chessable' : 'TTS is disabled';
+
+  // Only update the base status if we're not reflecting playback state
+  if (currentPlaybackState === 'idle') {
+    controls.statusDot.className = on ? 'status-dot' : 'status-dot off';
+    controls.statusText.textContent = on ? 'Active on Chessable' : 'TTS is disabled';
+  }
 }
 
-// ─── Settings serialisation ───────────────────────────────────────────────────
+function updateStatusFromPlayback(pbState: PlaybackState): void {
+  if (!controls.enabled.checked) return;
 
-function readSettings(): TTSSettings {
-  return {
-    enabled:         controls.enabled.checked,
-    rate:            parseFloat(controls.rate.value),
-    pitch:           parseFloat(controls.pitch.value),
-    volume:          parseFloat(controls.volume.value),
-    voice:           controls.voice.value,
-    readMoveFirst:   controls.readMove.checked,
-    readExplanation: controls.readExplanation.checked,
-    debugMode:       controls.debugMode.checked,
-  };
+  switch (pbState) {
+    case 'idle':
+      controls.statusDot.className = 'status-dot';
+      controls.statusText.textContent = 'Active on Chessable';
+      break;
+    case 'speaking':
+      controls.statusDot.className = 'status-dot speaking';
+      controls.statusText.textContent = 'Speaking...';
+      break;
+    case 'paused':
+      controls.statusDot.className = 'status-dot paused';
+      controls.statusText.textContent = 'Paused';
+      break;
+  }
 }
 
-// ─── Save & broadcast ─────────────────────────────────────────────────────────
+// ─── Tab messaging helpers ───────────────────────────────────────────────────
 
-function saveAndBroadcast(): void {
-  const settings = readSettings();
-  chrome.storage.sync.set(settings);
-
-  const msg: ExtensionMessage = { type: 'SETTINGS_UPDATED', settings };
-
+function sendToChessableTabs(msg: ExtensionMessage): void {
   chrome.tabs.query({ url: 'https://www.chessable.com/*' }, (tabs) => {
     tabs.forEach((tab) => {
       if (tab.id !== undefined) {
         chrome.tabs.sendMessage(tab.id, msg).catch(() => {
-          // Tab may not have content script injected yet — silently ignore
+          // Tab may not have content script injected yet
         });
       }
     });
   });
+}
+
+function sendToActiveChessableTab(msg: ExtensionMessage, callback?: (response: unknown) => void): void {
+  chrome.tabs.query({ url: 'https://www.chessable.com/*', active: true, currentWindow: true }, (tabs) => {
+    const firstTab = tabs[0];
+    if (firstTab !== undefined && firstTab.id !== undefined) {
+      if (callback) {
+        chrome.tabs.sendMessage(firstTab.id, msg).then(callback).catch(() => {
+          // No content script
+        });
+      } else {
+        chrome.tabs.sendMessage(firstTab.id, msg).catch(() => {
+          // No content script
+        });
+      }
+    }
+  });
+}
+
+// ─── Save & send (partial updates) ──────────────────────────────────────────
+
+function saveAndSend(partial: Partial<TTSSettings>): void {
+  chrome.storage.sync.set(partial);
+  sendToChessableTabs({ type: 'SETTINGS_UPDATED', settings: partial });
 }
 
 // ─── Debounce helper ─────────────────────────────────────────────────────────
@@ -137,56 +198,153 @@ function debounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
   }) as T;
 }
 
-const debouncedSave = debounce(saveAndBroadcast, 150);
-
 // ─── Event listeners ──────────────────────────────────────────────────────────
 
 controls.enabled.addEventListener('change', () => {
   updateStatus();
-  saveAndBroadcast();
+  saveAndSend({ enabled: controls.enabled.checked });
 });
 
-([controls.rate, controls.pitch, controls.volume] as HTMLInputElement[]).forEach((slider) => {
-  slider.addEventListener('input', () => {
-    updateDisplayValues();
-    debouncedSave();
-  });
+// Sliders — debounced partial saves
+const debouncedRateSave = debounce(() => {
+  saveAndSend({ rate: parseFloat(controls.rate.value) });
+}, 150);
+
+const debouncedPitchSave = debounce(() => {
+  saveAndSend({ pitch: parseFloat(controls.pitch.value) });
+}, 150);
+
+const debouncedVolumeSave = debounce(() => {
+  saveAndSend({ volume: parseFloat(controls.volume.value) });
+}, 150);
+
+controls.rate.addEventListener('input', () => {
+  updateDisplayValues();
+  debouncedRateSave();
 });
 
-controls.voice.addEventListener('change', saveAndBroadcast);
-controls.readMove.addEventListener('change', saveAndBroadcast);
-controls.readExplanation.addEventListener('change', saveAndBroadcast);
-controls.debugMode.addEventListener('change', saveAndBroadcast);
+controls.pitch.addEventListener('input', () => {
+  updateDisplayValues();
+  debouncedPitchSave();
+});
+
+controls.volume.addEventListener('input', () => {
+  updateDisplayValues();
+  debouncedVolumeSave();
+});
+
+controls.voice.addEventListener('change', () => {
+  saveAndSend({ voice: controls.voice.value });
+});
+
+controls.readMove.addEventListener('change', () => {
+  saveAndSend({ readMoveFirst: controls.readMove.checked });
+});
+
+controls.readExplanation.addEventListener('change', () => {
+  saveAndSend({ readExplanation: controls.readExplanation.checked });
+});
+
+// ─── Playback controls ──────────────────────────────────────────────────────
+
+controls.btnReadCurrent.addEventListener('click', () => {
+  sendToActiveChessableTab({ type: 'READ_CURRENT' });
+});
+
+controls.btnPauseResume.addEventListener('click', () => {
+  if (currentPlaybackState === 'speaking') {
+    sendToActiveChessableTab({ type: 'PAUSE_SPEECH' });
+  } else if (currentPlaybackState === 'paused') {
+    sendToActiveChessableTab({ type: 'RESUME_SPEECH' });
+  }
+});
+
+controls.btnRestart.addEventListener('click', () => {
+  sendToActiveChessableTab({ type: 'RESTART_SPEECH' });
+});
 
 // ─── Test button ──────────────────────────────────────────────────────────────
 
 controls.btnTest.addEventListener('click', () => {
-  const testMsg: ExtensionMessage = { type: 'TEST_SPEAK' };
-
-  chrome.tabs.query({ url: 'https://www.chessable.com/*', active: true }, (tabs) => {
-    const firstTab = tabs[0];
-    if (firstTab !== undefined && firstTab.id !== undefined) {
-      chrome.tabs.sendMessage(firstTab.id, testMsg).catch(() => fallbackSpeak());
-    } else {
-      fallbackSpeak();
-    }
+  sendToActiveChessableTab({ type: 'TEST_SPEAK' });
+  // Fallback: if no Chessable tab is active, speak locally
+  chrome.tabs.query({ url: 'https://www.chessable.com/*', active: true, currentWindow: true }, (tabs) => {
+    if (!tabs[0]) fallbackSpeak();
   });
 });
 
 function fallbackSpeak(): void {
-  const s = readSettings();
+  const rate   = parseFloat(controls.rate.value);
+  const pitch  = parseFloat(controls.pitch.value);
+  const volume = parseFloat(controls.volume.value);
+  const voice  = controls.voice.value;
+
   const u = new SpeechSynthesisUtterance(
     'Knight to f 3 check. This move attacks the queen and forks the rook.',
   );
-  u.rate   = s.rate;
-  u.pitch  = s.pitch;
-  u.volume = s.volume;
+  u.rate   = rate;
+  u.pitch  = pitch;
+  u.volume = volume;
 
-  if (s.voice) {
-    const match = speechSynthesis.getVoices().find((v) => v.name === s.voice);
+  if (voice) {
+    const match = speechSynthesis.getVoices().find((v) => v.name === voice);
     if (match) u.voice = match;
   }
 
   speechSynthesis.cancel();
   speechSynthesis.speak(u);
 }
+
+// ─── Incoming messages from content script ──────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
+  if (msg.type === 'PLAYBACK_STATE_CHANGED') {
+    updatePlaybackUI(msg.state);
+    updateStatusFromPlayback(msg.state);
+  }
+});
+
+// ─── Storage change listener (reactive UI sync) ─────────────────────────────
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync') return;
+
+  if (changes['enabled'] !== undefined) {
+    controls.enabled.checked = changes['enabled'].newValue as boolean;
+    updateStatus();
+  }
+  if (changes['rate'] !== undefined) {
+    controls.rate.value = String(changes['rate'].newValue);
+    updateDisplayValues();
+  }
+  if (changes['pitch'] !== undefined) {
+    controls.pitch.value = String(changes['pitch'].newValue);
+    updateDisplayValues();
+  }
+  if (changes['volume'] !== undefined) {
+    controls.volume.value = String(changes['volume'].newValue);
+    updateDisplayValues();
+  }
+  if (changes['voice'] !== undefined) {
+    controls.voice.value = changes['voice'].newValue as string;
+  }
+  if (changes['readMoveFirst'] !== undefined) {
+    controls.readMove.checked = changes['readMoveFirst'].newValue as boolean;
+  }
+  if (changes['readExplanation'] !== undefined) {
+    controls.readExplanation.checked = changes['readExplanation'].newValue as boolean;
+  }
+});
+
+// ─── Query playback state on popup open ──────────────────────────────────────
+
+sendToActiveChessableTab(
+  { type: 'GET_PLAYBACK_STATE' },
+  (response) => {
+    const resp = response as { state?: PlaybackState } | undefined;
+    if (resp?.state) {
+      updatePlaybackUI(resp.state);
+      updateStatusFromPlayback(resp.state);
+    }
+  },
+);

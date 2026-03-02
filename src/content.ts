@@ -10,12 +10,11 @@
 
 import { highlightSquare, clearHighlights } from './board-highlighter';
 import { processTextWithMoveMap } from './chess-notation';
-import { enableOverlay, disableOverlay } from './debug-overlay';
-import { createPanel } from './panel';
 import {
   DEFAULT_SETTINGS,
   ExtensionMessage,
   MoveRange,
+  PlaybackState,
   SelectorGroup,
   TTSSettings,
   TTSState,
@@ -81,10 +80,40 @@ let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 let collectedTriggers: Element[] = [];
 const DETECT_WINDOW_MS = 300;
 const COOLDOWN_MS = 1500;
-const STARTUP_GRACE_MS = 2000;
+const STARTUP_GRACE_MS = 3500;
 
 /** Suppresses observer triggers during initial page render. */
 let initialLoadComplete = false;
+
+/**
+ * Cached training-page check. The observer runs on ALL chessable.com pages,
+ * but wrong-move detection only makes sense on training/study pages where a
+ * chess board is present. This flag short-circuits the entire observer callback
+ * on non-training pages (courses listing, profile, settings, etc.).
+ *
+ * Re-evaluated on SPA navigation and periodically when null (unknown).
+ */
+let isOnTrainingPage: boolean | null = null;
+
+/** Selectors that indicate a training/study page (chess board present). */
+const TRAINING_PAGE_INDICATORS = [
+  'cg-board',               // Chessground board element
+  'cg-container',           // Chessground container
+  '.cg-wrap',               // Chessground wrapper class
+  '#theOpeningMoves',       // Opening moves panel
+  '.board-area',            // Board area container
+  '.boardWrapper',          // Board wrapper
+  '[class*="chessBoard"]',  // Any chess board class variant
+];
+
+function checkTrainingPage(): boolean {
+  for (const sel of TRAINING_PAGE_INDICATORS) {
+    try {
+      if (document.querySelector(sel)) return true;
+    } catch { /* invalid selector */ }
+  }
+  return false;
+}
 
 // ─── Word highlighting + playback state ──────────────────────────────────────
 
@@ -92,6 +121,8 @@ let currentWordMapping: WordMapping | null = null;
 let currentRawText = '';
 let currentProcessedText = '';
 let processedWordStarts: number[] = [];
+/** Pre-computed charIndex → wordIndex for O(1) onboundary lookup */
+let charToWordIndex: Int32Array = new Int32Array(0);
 let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
 // ─── Timed board highlighting state ──────────────────────────────────────────
@@ -103,30 +134,35 @@ let currentHighlightedSquare: string | null = null;
 
 chrome.storage.sync.get(Object.keys(DEFAULT_SETTINGS), (stored) => {
   settings = { ...settings, ...(stored as Partial<TTSSettings>) };
-
-  // Initialize debug overlay if it was enabled
-  if (settings.debugMode) {
-    enableOverlay(SELECTORS);
-  }
 });
+
+// ─── Playback state broadcast ──────────────────────────────────────────────────
+
+function getPlaybackState(): PlaybackState {
+  if (state !== 'speaking') return 'idle';
+  return window.speechSynthesis.paused ? 'paused' : 'speaking';
+}
+
+function broadcastPlaybackState(): void {
+  try {
+    chrome.runtime.sendMessage({
+      type: 'PLAYBACK_STATE_CHANGED',
+      state: getPlaybackState(),
+    } as ExtensionMessage).catch(() => {
+      // No listener (popup closed) — that's fine
+    });
+  } catch {
+    // Extension context invalidated — ignore
+  }
+}
 
 // ─── Message listener ─────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
+chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendResponse) => {
   switch (msg.type) {
     case 'SETTINGS_UPDATED': {
       const prev = { ...settings };
       settings = { ...settings, ...msg.settings };
-
-      // Sync debug overlay state
-      if (msg.settings.debugMode !== undefined) {
-        if (msg.settings.debugMode) {
-          enableOverlay(SELECTORS);
-        } else {
-          disableOverlay();
-        }
-        panel?.setDebugChecked(settings.debugMode);
-      }
 
       // If disabled mid-speech, cancel immediately
       if (msg.settings.enabled === false && state === 'speaking') {
@@ -144,15 +180,41 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
       )) {
         restartSpeechWithNewSettings();
       }
-
-      // Sync panel with new settings
-      panel?.updateFromSettings(settings);
       break;
     }
+
     case 'TEST_SPEAK':
       speak('Knight to f 3 check. This move attacks the queen on d 4 and forks the rook.');
       break;
+
+    case 'READ_CURRENT':
+      readCurrentExplanation();
+      break;
+
+    case 'PAUSE_SPEECH':
+      if (state === 'speaking' && !window.speechSynthesis.paused) {
+        window.speechSynthesis.pause();
+        broadcastPlaybackState();
+      }
+      break;
+
+    case 'RESUME_SPEECH':
+      if (state === 'speaking' && window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        broadcastPlaybackState();
+      }
+      break;
+
+    case 'RESTART_SPEECH':
+      restartCurrentSpeech();
+      break;
+
+    case 'GET_PLAYBACK_STATE':
+      sendResponse({ state: getPlaybackState() });
+      return true; // keep channel open for sendResponse
   }
+
+  return undefined;
 });
 
 // ─── Self-mutation filter ─────────────────────────────────────────────────────
@@ -161,11 +223,8 @@ function isOwnMutation(node: Node): boolean {
   if (node.nodeType !== Node.ELEMENT_NODE) return false;
   const el = node as Element;
   return !!(
-    el.closest?.('#chessable-tts-panel') ||
     el.hasAttribute?.('data-chtts-highlight') ||
     el.closest?.('[data-chtts-highlight]') ||
-    el.hasAttribute?.('data-chtts-debug') ||
-    el.closest?.('[data-chtts-debug]') ||
     el.hasAttribute?.('data-chtts-word') ||
     el.closest?.('[data-chtts-word]')
   );
@@ -249,7 +308,7 @@ function onSpeechEnd(): void {
   currentHighlightedSquare = null;
   clearWordHighlighting(currentWordMapping);
   currentWordMapping = null;
-  panel?.setPlaybackState('idle');
+  broadcastPlaybackState();
   clearKeepAlive();
 
   state = 'cooldown';
@@ -275,7 +334,7 @@ function resetToIdle(): void {
   clearWordHighlighting(currentWordMapping);
   currentWordMapping = null;
   currentHighlightedSquare = null;
-  panel?.setPlaybackState('idle');
+  broadcastPlaybackState();
   clearKeepAlive();
   collectedTriggers = [];
   state = 'idle';
@@ -332,6 +391,31 @@ function restartSpeechWithNewSettings(): void {
 }
 
 /**
+ * Restart the current speech from the beginning (used by RESTART_SPEECH message).
+ */
+function restartCurrentSpeech(): void {
+  window.speechSynthesis.cancel();
+  clearHighlights();
+  clearWordHighlighting(currentWordMapping);
+  currentWordMapping = null;
+  currentHighlightedSquare = null;
+  clearKeepAlive();
+  resetToIdle();
+
+  if (currentRawText) {
+    state = 'speaking';
+
+    // Re-find the explanation element and set up highlighting again
+    const explanationEl = findExplanationElement(null);
+    if (explanationEl) {
+      currentWordMapping = prepareHighlighting(explanationEl, currentRawText);
+    }
+
+    doSpeakProcessed(currentProcessedText);
+  }
+}
+
+/**
  * Core speech function. Called only from the state machine (onDetectWindowClosed)
  * or from readCurrentExplanation/speak. The state machine guarantees no concurrent
  * speech, so there is no cancel or debounce needed here.
@@ -366,7 +450,19 @@ function doSpeakProcessed(processed: string): void {
   // Precompute word start positions for onboundary mapping
   processedWordStarts = computeWordStarts(processed);
 
-  panel?.setPlaybackState('speaking');
+  // Build charIndex → wordIndex lookup table for O(1) onboundary resolution
+  // Each index in the array maps a character position to its word index (-1 = no word)
+  charToWordIndex = new Int32Array(processed.length);
+  charToWordIndex.fill(-1);
+  for (let wi = 0; wi < processedWordStarts.length; wi++) {
+    const start = processedWordStarts[wi] as number;
+    const end = (processedWordStarts[wi + 1] ?? processed.length) as number;
+    for (let ci = start; ci < end; ci++) {
+      charToWordIndex[ci] = wi;
+    }
+  }
+
+  broadcastPlaybackState();
 
   const utterance = new SpeechSynthesisUtterance(processed);
 
@@ -384,15 +480,14 @@ function doSpeakProcessed(processed: string): void {
   utterance.onboundary = (e: SpeechSynthesisEvent) => {
     if (e.name !== 'word') return;
 
+    // O(1) word index lookup via pre-computed table
+    const wordIdx = e.charIndex < charToWordIndex.length
+      ? (charToWordIndex[e.charIndex] ?? -1)
+      : -1;
+
     // Word highlighting in the explanation text
-    if (currentWordMapping) {
-      const wordIdx = processedWordStarts.findIndex((start, i) => {
-        const nextStart = processedWordStarts[i + 1] ?? Infinity;
-        return e.charIndex >= start && e.charIndex < nextStart;
-      });
-      if (wordIdx >= 0) {
-        highlightWordByProcessedIndex(currentWordMapping, wordIdx);
-      }
+    if (currentWordMapping && wordIdx >= 0) {
+      highlightWordByProcessedIndex(currentWordMapping, wordIdx);
     }
 
     // Timed board square highlighting — find which move range the cursor is in
@@ -685,7 +780,7 @@ function collectExplanationNearMove(moveEl: Element): string {
 
 /**
  * Extract and speak the currently visible explanation panel text.
- * Used by the "Read current" button in the injected panel.
+ * Used by the popup's "Read current" button via READ_CURRENT message.
  *
  * This ALWAYS works regardless of state — it cancels ongoing speech,
  * resets the state machine, and speaks immediately.
@@ -764,40 +859,77 @@ function readCurrentExplanation(): void {
 
 // ─── Wrong-move visibility check ──────────────────────────────────────────────
 
+/**
+ * Check if a wrong-move indicator is currently visible in a training context.
+ *
+ * Unlike the previous implementation which searched the entire document
+ * (matching decorative icons on non-training pages), this scopes the search
+ * to known training/board containers. If no container is found, falls back
+ * to a document-wide search for the most specific selector only.
+ */
 function isWrongMoveVisible(): boolean {
-  return SELECTORS.wrongMoveIndicator.some((sel) => {
-    try { return !!document.querySelector(sel); }
-    catch { return false; }
-  });
+  // Look for wrong-move indicators within training containers first
+  const trainingContainers = [
+    '.board-footer',
+    '.board-area',
+    '.boardWrapper',
+    '[data-testid="moveNotification"]',
+  ];
+
+  for (const containerSel of trainingContainers) {
+    try {
+      const container = document.querySelector(containerSel);
+      if (!container) continue;
+
+      // moveNotification itself is a direct indicator
+      if (containerSel === '[data-testid="moveNotification"]') return true;
+
+      for (const indicatorSel of SELECTORS.wrongMoveIndicator) {
+        try {
+          if (container.querySelector(indicatorSel)) return true;
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  }
+
+  // Narrow fallback: only check for moveNotification (most specific, training-only)
+  try {
+    const notification = document.querySelector('[data-testid="moveNotification"]');
+    if (notification) {
+      // Verify it contains a wrong-move indicator, not just any notification
+      for (const sel of SELECTORS.wrongMoveIndicator) {
+        try {
+          if (notification.querySelector(sel)) return true;
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* skip */ }
+
+  return false;
 }
 
 // ─── MutationObserver trigger predicates ──────────────────────────────────────
 
 function isWrongMoveTrigger(el: Element): boolean {
-  // Direct move notification
-  if (el.matches?.('[data-testid="moveNotification"]') ||
-      el.querySelector?.('[data-testid="moveNotification"]')) {
+  // Only match SPECIFIC wrong-move indicator elements. We intentionally
+  // do NOT use broad keyword matching (wrong/incorrect/mistake) because
+  // those words appear in non-training UI (course stats, progress displays)
+  // and cause false triggers on the courses listing page.
+
+  // The element itself is a move notification
+  if (el.matches?.('[data-testid="moveNotification"]')) {
     return true;
   }
 
-  // Wrong-move icon
-  if (el.matches?.('.icon--wrong') ||
-      el.querySelector?.('.icon--wrong') ||
-      el.matches?.('[class*="icon--wrong"]')) {
+  // The element itself is a wrong-move icon
+  if (el.matches?.('.icon--wrong') || el.matches?.('[class*="icon--wrong"]')) {
     return true;
   }
 
-  // Nodes inside #teachComment or comment scroll container
-  if (el.closest?.('#teachComment') ||
-      el.matches?.('#teachComment') ||
-      el.matches?.('[data-testid="commentScrollContainer"]') ||
-      el.querySelector?.('[data-testid="commentTextBlock"]')) {
-    return true;
-  }
-
-  // Fallback: className/id matching for wrong/incorrect/mistake
-  const nodeStr = `${el.className ?? ''} ${el.id ?? ''}`;
-  if (/wrong|incorrect|mistake/i.test(nodeStr)) {
+  // A move notification was added as a direct child (shallow check — NOT
+  // a deep subtree search, which would match decorative icons on non-training pages)
+  if (el.querySelector?.(':scope > [data-testid="moveNotification"]') ??
+      el.querySelector?.(':scope > .icon--wrong')) {
     return true;
   }
 
@@ -807,7 +939,8 @@ function isWrongMoveTrigger(el: Element): boolean {
 function isWrongMoveAttributeChange(mutation: MutationRecord, el: Element): boolean {
   if (mutation.attributeName === 'class') {
     const className = el.className ?? '';
-    if (className.includes('icon--wrong') || /wrong|incorrect|mistake/i.test(className)) {
+    // Only match the specific icon--wrong class, not broad keyword patterns
+    if (className.includes('icon--wrong')) {
       return true;
     }
   }
@@ -826,6 +959,14 @@ function isWrongMoveAttributeChange(mutation: MutationRecord, el: Element): bool
 
 const observer = new MutationObserver((mutations: MutationRecord[]) => {
   if (!settings.enabled || !initialLoadComplete) return;
+
+  // Training-page gate: skip all processing on non-training pages
+  // (courses listing, profile, settings, etc. where there's no chess board).
+  // Re-check when unknown (null) — e.g. after SPA navigation.
+  if (isOnTrainingPage === null) {
+    isOnTrainingPage = checkTrainingPage();
+  }
+  if (!isOnTrainingPage) return;
 
   for (const mutation of mutations) {
     // ── Newly added nodes ──────────────────────────────────────────────────
@@ -869,129 +1010,6 @@ const observer = new MutationObserver((mutations: MutationRecord[]) => {
   }
 });
 
-// ─── Injected panel ───────────────────────────────────────────────────────────
-
-let panel: ReturnType<typeof createPanel> | null = null;
-
-function initPanel(): void {
-  /** Helper: update a setting, persist, broadcast, and restart speech if needed. */
-  function applySpeechSetting<K extends keyof TTSSettings>(key: K, value: TTSSettings[K]): void {
-    settings = { ...settings, [key]: value };
-    chrome.storage.sync.set({ [key]: value });
-    broadcastSettings({ [key]: value } as Partial<TTSSettings>);
-    restartSpeechWithNewSettings();
-  }
-
-  panel = createPanel({
-    onToggleEnabled(enabled) {
-      settings.enabled = enabled;
-      chrome.storage.sync.set({ enabled });
-      broadcastSettings({ enabled });
-
-      // Cancel speech immediately when disabled
-      if (!enabled && state === 'speaking') {
-        window.speechSynthesis.cancel();
-        clearHighlights();
-        resetToIdle();
-      }
-    },
-
-    onRateChange(rate) {
-      applySpeechSetting('rate', rate);
-    },
-
-    onPitchChange(pitch) {
-      applySpeechSetting('pitch', pitch);
-    },
-
-    onVolumeChange(volume) {
-      applySpeechSetting('volume', volume);
-    },
-
-    onVoiceChange(voice) {
-      applySpeechSetting('voice', voice);
-    },
-
-    onReadMoveChange(on) {
-      settings.readMoveFirst = on;
-      chrome.storage.sync.set({ readMoveFirst: on });
-      broadcastSettings({ readMoveFirst: on });
-    },
-
-    onReadExplanationChange(on) {
-      settings.readExplanation = on;
-      chrome.storage.sync.set({ readExplanation: on });
-      broadcastSettings({ readExplanation: on });
-    },
-
-    onReadCurrent() {
-      readCurrentExplanation();
-    },
-
-    onToggleDebug(debugOn) {
-      settings.debugMode = debugOn;
-      chrome.storage.sync.set({ debugMode: debugOn });
-      if (debugOn) {
-        enableOverlay(SELECTORS);
-      } else {
-        disableOverlay();
-      }
-      broadcastSettings({ debugMode: debugOn });
-    },
-
-    onPause() {
-      window.speechSynthesis.pause();
-      panel?.setPlaybackState('paused');
-    },
-
-    onResume() {
-      window.speechSynthesis.resume();
-      panel?.setPlaybackState('speaking');
-    },
-
-    onRestart() {
-      window.speechSynthesis.cancel();
-      clearHighlights();
-      clearWordHighlighting(currentWordMapping);
-      currentWordMapping = null;
-      currentHighlightedSquare = null;
-      clearKeepAlive();
-      resetToIdle();
-
-      // Re-speak the same text (moveRanges are still valid from initial doSpeak)
-      if (currentRawText) {
-        state = 'speaking';
-
-        // Re-find the explanation element and set up highlighting again
-        const explanationEl = findExplanationElement(null);
-        if (explanationEl) {
-          currentWordMapping = prepareHighlighting(explanationEl, currentRawText);
-        }
-
-        doSpeakProcessed(currentProcessedText);
-      }
-    },
-  });
-
-  panel.updateFromSettings(settings);
-  panel.initVoiceList(settings.voice);
-  panel.mount();
-}
-
-function broadcastSettings(partial: Partial<TTSSettings>): void {
-  // Broadcast to popup if it's listening
-  try {
-    chrome.runtime.sendMessage({
-      type: 'SETTINGS_UPDATED',
-      settings: partial,
-    } as ExtensionMessage).catch(() => {
-      // No listener — that's fine
-    });
-  } catch {
-    // Extension context invalidated — ignore
-  }
-}
-
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 function startObserver(): void {
@@ -1009,17 +1027,26 @@ function startObserver(): void {
     initialLoadComplete = true;
     console.log('[ChessableTTS] Observer active (state machine).');
   }, STARTUP_GRACE_MS);
-}
 
-function bootstrap(): void {
-  startObserver();
-  initPanel();
+  // SPA navigation awareness: Chessable is a SPA, so navigating between
+  // courses reuses the content script. Reset the grace period and training-page
+  // cache on URL changes to prevent stale state from triggering speech.
+  let lastUrl = location.href;
+  const navObserver = new MutationObserver(() => {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      initialLoadComplete = false;
+      isOnTrainingPage = null; // Re-evaluate on next mutation after grace period
+      setTimeout(() => { initialLoadComplete = true; }, STARTUP_GRACE_MS);
+    }
+  });
+  navObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 if (document.body) {
-  bootstrap();
+  startObserver();
 } else {
-  document.addEventListener('DOMContentLoaded', bootstrap);
+  document.addEventListener('DOMContentLoaded', startObserver);
 }
 
 // ─── Debug API ────────────────────────────────────────────────────────────────
